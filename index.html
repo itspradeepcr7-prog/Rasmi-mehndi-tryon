@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>🌻 Rasmi Mehendi Try-On 🌻</title>
+  <style>
+    /* your existing sunflower + UI styles (kept the same look) */
+    body {
+      margin: 0;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: url("sunflower-bg.jpg.jpeg") no-repeat center center fixed;
+      background-size: cover;
+      color: #333;
+    }
+    h1 { text-align:center; padding:20px; font-size:2.2rem; color:#ff9800; text-shadow:2px 2px 5px rgba(0,0,0,0.35); }
+    .container { display:flex; justify-content:center; gap:20px; padding:20px; flex-wrap:wrap; }
+    .card { background: rgba(255,255,255,0.9); padding:18px; border-radius:16px; box-shadow:0 6px 18px rgba(0,0,0,0.12); }
+    #preview { width:450px; height:550px; background:#fff; border-radius:14px; border:3px solid #ffcc80; display:flex; align-items:center; justify-content:center; position:relative; overflow:hidden; }
+    #handImg { max-width:100%; max-height:100%; pointer-events:none; display:block; }
+    .design-wrapper { position:absolute; left:50%; top:50%; transform-origin:center center; touch-action:none; cursor:grab; display:none; }
+    .design-wrapper:active { cursor:grabbing; }
+    .design-img { display:block; pointer-events:none; mix-blend-mode:multiply; opacity:0.85; }
+    .controls h3 { color:#e65100; margin:0 0 6px 0; }
+    select, input[type="file"], input[type="color"], input[type="range"] { padding:6px; border:2px solid #ff9800; border-radius:8px; background:#fff8e1; cursor:pointer; width:100%; box-sizing:border-box; }
+    .button { padding:10px 14px; border-radius:24px; border:none; background:linear-gradient(45deg,#ffeb3b,#ff9800); font-weight:700; cursor:pointer; box-shadow:2px 2px 6px rgba(0,0,0,0.2); }
+    .button:hover { transform:scale(1.03); }
+  </style>
+</head>
+<body>
+  <h1>🌻 Rasmi Mehendi Try-On 🌻</h1>
+  <div class="container">
+    <div class="card">
+      <div id="preview">
+        <img id="handImg" src="hand-left.png" alt="hand">
+        <div id="designWrapper" class="design-wrapper">
+          <img id="designImg" class="design-img" src="" alt="design">
+        </div>
+      </div>
+    </div>
+
+    <div class="card controls" style="min-width:320px;">
+      <h3>Choose Hand</h3>
+      <select id="handSelector">
+        <option value="hand-left.png">Left Hand</option>
+        <option value="hand-right.png">Right Hand</option>
+        <option value="hand-both.png">Both Hands</option>
+      </select>
+
+      <h3>Upload Mehndi Design</h3>
+      <input type="file" id="uploadDesign" accept="image/*">
+      <div style="font-size:12px;color:#666;margin-top:6px;">Background removal uses remove.bg automatically.</div>
+
+      <h3 style="margin-top:12px;">Position / Transform</h3>
+      <label>Scale</label>
+      <input type="range" id="scaleRange" min="10" max="300" value="100">
+      <label style="margin-top:8px;">Rotate</label>
+      <input type="range" id="rotateRange" min="-180" max="180" value="0">
+      <div style="display:flex;gap:8px;margin-top:10px;">
+        <button class="button" id="resetBtn">Reset</button>
+        <button class="button" id="toggleOutline">Toggle Outline</button>
+      </div>
+
+      <h3 style="margin-top:12px;">Color</h3>
+      <input type="color" id="colorPicker" value="#7a4117">
+
+      <h3 style="margin-top:12px;">Actions</h3>
+      <button class="button" id="downloadBtn">Download Preview PNG</button>
+      <div style="font-size:12px;color:#666;margin-top:8px;">Tip: open DevTools → Network/Console if removal fails to see status & message.</div>
+    </div>
+  </div>
+
+<script>
+/* ---------- CONFIG ---------- */
+const REMOVE_BG_API_KEY = 'DEKmaL5DpU8kE8eVy6cfM35A'; // <-- your provided key (works for quick testing)
+
+/* ---------- DOM ---------- */
+const handSelector = document.getElementById('handSelector');
+const handImg = document.getElementById('handImg');
+const uploadDesign = document.getElementById('uploadDesign');
+const designWrapper = document.getElementById('designWrapper');
+const designImg = document.getElementById('designImg');
+const scaleRange = document.getElementById('scaleRange');
+const rotateRange = document.getElementById('rotateRange');
+const resetBtn = document.getElementById('resetBtn');
+const colorPicker = document.getElementById('colorPicker');
+const downloadBtn = document.getElementById('downloadBtn');
+const toggleOutline = document.getElementById('toggleOutline');
+const preview = document.getElementById('preview');
+
+let state = { x: null, y: null, scale: 1, rotate: 0, isDragging:false, startPointer:null, startPos:null, designNaturalW:0, designNaturalH:0 };
+
+/* ---------- Hand switch ---------- */
+handSelector.addEventListener('change', () => {
+  handImg.src = handSelector.value;
+  // try to refit if a design is loaded
+  if (designImg.src) autoFitDesign();
+});
+
+/* ---------- Upload & remove.bg (multipart/form-data) ---------- */
+uploadDesign.addEventListener('change', async (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  // quick client-side size guard (remove.bg may timeout on very large images)
+  if (file.size > 12_000_000) { // ~12MB
+    if (!confirm('File is large — try a smaller image or expect longer processing. Continue?')) return;
+  }
+
+  try {
+    // Build form data and POST to remove.bg as multipart/form-data
+    const form = new FormData();
+    form.append('image_file', file);
+    form.append('size', 'regular');
+
+    console.log('Uploading to remove.bg, please wait...');
+    const res = await fetch('https://api.remove.bg/v1.0/removebg', {
+      method: 'POST',
+      headers: { 'X-Api-Key': REMOVE_BG_API_KEY }, // no 'Content-Type' header -- fetch will set the boundary
+      body: form
+    });
+
+    if (!res.ok) {
+      // read error body (remove.bg returns helpful text/json). Log the status & body.
+      const text = await res.text();
+      console.error('remove.bg failed', res.status, text);
+      // Friendly messages for common cases:
+      if (res.status === 403) {
+        alert('Background removal failed (403). Check that your API key is valid and that you have credits. See console for details.');
+      } else if (res.status === 429) {
+        alert('Background removal failed (429). Rate limit exceeded. Try again later.');
+      } else if (res.status === 422) {
+        alert('Background removal timed out (422). Try a smaller image or better network.');
+      } else {
+        alert('Background removal failed: ' + res.status + ' — see console for details.');
+      }
+      return;
+    }
+
+    // success -> get blob and show
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    designImg.src = url;
+    designImg.onload = () => {
+      designWrapper.style.display = 'block';
+      state.designNaturalW = designImg.naturalWidth;
+      state.designNaturalH = designImg.naturalHeight;
+      autoFitDesign();
+      applyPreviewTint();
+      console.log('remove.bg success — image shown in preview');
+    };
+  } catch (err) {
+    console.error('remove.bg exception', err);
+    alert('Background removal failed (network or CORS). Open DevTools Console → Network to inspect the response.');
+  }
+});
+
+/* ---------- Auto-fit design to hand ---------- */
+function autoFitDesign(){
+  if (!state.designNaturalW || !handImg.width) {
+    // if hand image not loaded yet, wait a tick
+    setTimeout(autoFitDesign, 150);
+    return;
+  }
+  const targetWidth = handImg.width * 0.8; // cover 80% of hand width
+  const scale = targetWidth / state.designNaturalW;
+  state.scale = scale;
+  state.rotate = 0;
+  scaleRange.value = Math.round(scale * 100);
+  rotateRange.value = 0;
+  // position center on hand (in preview coords)
+  const rect = preview.getBoundingClientRect();
+  const handRect = handImg.getBoundingClientRect();
+  state.x = (handRect.left + handRect.width/2) - rect.left;
+  state.y = (handRect.top + handRect.height/2) - rect.top;
+  updateWrapperTransform();
+}
+
+/* ---------- Transform update ---------- */
+function updateWrapperTransform(){
+  if (state.x === null || state.y === null) {
+    const r = preview.getBoundingClientRect();
+    state.x = r.width/2; state.y = r.height/2;
+  }
+  designWrapper.style.left = state.x + 'px';
+  designWrapper.style.top  = state.y + 'px';
+  const w = state.designNaturalW * state.scale;
+  const h = state.designNaturalH * state.scale;
+  designWrapper.style.width = w + 'px';
+  designWrapper.style.height = h + 'px';
+  designImg.style.width = w + 'px';
+  designImg.style.height = h + 'px';
+  designWrapper.style.transform = `translate(-50%,-50%) rotate(${state.rotate}deg)`;
+}
+
+/* ---------- Sliders ---------- */
+scaleRange.addEventListener('input', () => {
+  state.scale = Number(scaleRange.value)/100;
+  updateWrapperTransform();
+});
+rotateRange.addEventListener('input', () => {
+  state.rotate = Number(rotateRange.value);
+  updateWrapperTransform();
+});
+
+/* ---------- Dragging (pointer events: mouse + touch) ---------- */
+designWrapper.addEventListener('pointerdown', (ev) => {
+  ev.preventDefault();
+  designWrapper.setPointerCapture(ev.pointerId);
+  state.isDragging = true;
+  state.startPointer = {x: ev.clientX, y: ev.clientY};
+  state.startPos = {x: state.x, y: state.y};
+});
+designWrapper.addEventListener('pointermove', (ev) => {
+  if (!state.isDragging) return;
+  const dx = ev.clientX - state.startPointer.x;
+  const dy = ev.clientY - state.startPointer.y;
+  state.x = state.startPos.x + dx;
+  state.y = state.startPos.y + dy;
+  updateWrapperTransform();
+});
+designWrapper.addEventListener('pointerup', (ev) => {
+  state.isDragging = false;
+  try { designWrapper.releasePointerCapture(ev.pointerId); } catch(e){}
+});
+
+/* ---------- Reset / Outline / Color ---------- */
+resetBtn.addEventListener('click', ()=> autoFitDesign());
+toggleOutline.addEventListener('click', ()=> {
+  designWrapper.style.outline = designWrapper.style.outline ? '' : '2px solid #aa3300';
+});
+function applyPreviewTint(){
+  // a reasonable default tint via CSS filters — keeps design crisp
+  designImg.style.filter = 'opacity(0.85) sepia(1) saturate(2.4) hue-rotate(8deg) brightness(0.95)';
+}
+colorPicker.addEventListener('input', () => {
+  // If you want exact color tinting, you'd need to process via canvas server-side.
+  applyPreviewTint();
+});
+
+/* ---------- DOWNLOAD ---------- */
+downloadBtn.addEventListener('click', async () => {
+  if (!designImg.src) { alert('Please upload a design first.'); return; }
+  const canvas = document.createElement('canvas');
+  canvas.width = preview.clientWidth * 2;
+  canvas.height = preview.clientHeight * 2;
+  const ctx = canvas.getContext('2d');
+
+  // draw hand
+  const hand = new Image();
+  hand.crossOrigin = 'anonymous';
+  hand.src = handImg.src;
+  await hand.decode();
+
+  ctx.drawImage(hand, 0, 0, canvas.width, canvas.height);
+
+  // draw design transformed
+  const design = new Image();
+  design.crossOrigin = 'anonymous';
+  design.src = designImg.src;
+  await design.decode();
+
+  const scaleFactor = canvas.width / preview.clientWidth;
+  const w = state.designNaturalW * state.scale * scaleFactor;
+  const h = state.designNaturalH * state.scale * scaleFactor;
+  const cx = state.x * scaleFactor;
+  const cy = state.y * scaleFactor;
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(state.rotate * Math.PI / 180);
+  ctx.translate(-w/2, -h/2);
+
+  ctx.globalAlpha = 0.85;
+  ctx.globalCompositeOperation = 'multiply';
+  ctx.drawImage(design, 0, 0, w, h);
+
+  ctx.restore();
+
+  canvas.toBlob(blob => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'rasmi-mehndi-preview.png';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }, 'image/png');
+});
+
+/* ---------- Helpful debug tip: check responses in network & console ---------- */
+// If background removal keeps failing: open DevTools → Network → look for the POST to api.remove.bg/v1.0/removebg
+// Click it and check the Status and Response body — that will say 403/429/422 etc.
+// See docs: remove.bg examples use multipart/form-data and explain common errors (timeouts/limits/credits). :contentReference[oaicite:4]{index=4}
+</script>
+</body>
+</html>
